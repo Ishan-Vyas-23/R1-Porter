@@ -12,6 +12,13 @@ const createRequest = async (fields) => {
     passenger_phone,
     station_code,
     platform_number,
+    pickup_mode,
+    pickup_address,
+    pickup_lat,
+    pickup_lng,
+    drop_address,
+    drop_lat,
+    drop_lng,
     pickup_location,
     destination_location,
     accessibility_notes,
@@ -29,6 +36,13 @@ const createRequest = async (fields) => {
        passenger_phone,
        station_code,
        platform_number,
+       pickup_mode,
+       pickup_address,
+       pickup_lat,
+       pickup_lng,
+       drop_address,
+       drop_lat,
+       drop_lng,
        pickup_location,
        destination_location,
        accessibility_notes,
@@ -38,7 +52,7 @@ const createRequest = async (fields) => {
        status
      )
      VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'PENDING'
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'PENDING'
      )
      RETURNING *`,
     [
@@ -48,6 +62,13 @@ const createRequest = async (fields) => {
       passenger_phone || null,
       station_code || null,
       platform_number || null,
+      pickup_mode || "MANUAL",
+      pickup_address || null,
+      pickup_lat ?? null,
+      pickup_lng ?? null,
+      drop_address || null,
+      drop_lat ?? null,
+      drop_lng ?? null,
       pickup_location || null,
       destination_location || null,
       accessibility_notes || null,

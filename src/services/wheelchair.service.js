@@ -54,6 +54,8 @@ const createRequest = async (user, body) => {
 
   const serviceType = body.service_type || "WHEELCHAIR";
   const bagCount = body.bag_count || 0;
+  const pickupAddress = body.pickup_address || body.pickup_location || null;
+  const dropAddress = body.drop_address || body.destination_location || null;
 
   const estimatedCost = calculateCost(serviceType, bagCount);
 
@@ -64,8 +66,15 @@ const createRequest = async (user, body) => {
     passenger_phone: body.passenger_phone || null,
     station_code: body.station_code || null,
     platform_number: body.platform_number || null,
-    pickup_location: body.pickup_location || null,
-    destination_location: body.destination_location || null,
+    pickup_mode: body.pickup_mode || "MANUAL",
+    pickup_address: pickupAddress,
+    pickup_lat: body.pickup_lat ?? null,
+    pickup_lng: body.pickup_lng ?? null,
+    drop_address: dropAddress,
+    drop_lat: body.drop_lat ?? null,
+    drop_lng: body.drop_lng ?? null,
+    pickup_location: body.pickup_location || pickupAddress,
+    destination_location: body.destination_location || dropAddress,
     accessibility_notes: body.accessibility_notes || null,
 
     service_type: serviceType,

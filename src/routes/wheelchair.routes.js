@@ -37,9 +37,20 @@ router.use(authenticate);
  *               passenger_phone:      { type: string }
  *               station_code:         { type: string }
  *               platform_number:      { type: string }
- *               pickup_location:      { type: string }
- *               destination_location: { type: string }
+ *               pickup_mode:          { type: string, enum: [CURRENT_LOCATION, MANUAL] }
+ *               pickup_address:       { type: string }
+ *               pickup_lat:           { type: number }
+ *               pickup_lng:           { type: number }
+ *               drop_address:         { type: string }
+ *               drop_lat:             { type: number }
+ *               drop_lng:             { type: number }
+ *               pickup_location:      { type: string, deprecated: true }
+ *               destination_location: { type: string, deprecated: true }
  *               accessibility_notes:  { type: string }
+ *             description: >
+ *               For CURRENT_LOCATION, pickup_lat and pickup_lng are required.
+ *               For MANUAL, pickup_address is required. drop_address is required.
+ *               pickup_location and destination_location are deprecated legacy aliases.
  *     responses:
  *       201: { description: Request created }
  *       400: { description: Validation error }

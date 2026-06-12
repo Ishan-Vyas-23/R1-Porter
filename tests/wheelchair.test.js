@@ -58,6 +58,13 @@ const sampleRequest = {
   passenger_phone:        '+919876543210',
   station_code:           'ADI',
   platform_number:        '3',
+  pickup_mode:            'CURRENT_LOCATION',
+  pickup_address:         'Ahmedabad Junction Main Entrance',
+  pickup_lat:             23.0225,
+  pickup_lng:             72.5714,
+  drop_address:           'Platform 3, Ahmedabad Junction',
+  drop_lat:               23.0230,
+  drop_lng:               72.5720,
   pickup_location:        'Main Entrance Gate',
   destination_location:   'Platform 3',
   accessibility_notes:    'Uses manual wheelchair',
@@ -163,6 +170,13 @@ describe('POST /api/wheelchair/request', () => {
         passenger_phone:      '+919876543210',
         station_code:         'ADI',
         platform_number:      '3',
+        pickup_mode:          'CURRENT_LOCATION',
+        pickup_address:       'Ahmedabad Junction Main Entrance',
+        pickup_lat:           23.0225,
+        pickup_lng:           72.5714,
+        drop_address:         'Platform 3, Ahmedabad Junction',
+        drop_lat:             23.0230,
+        drop_lng:             72.5720,
         pickup_location:      'Main Entrance Gate',
         destination_location: 'Platform 3',
         accessibility_notes:  'Uses manual wheelchair',
@@ -172,6 +186,18 @@ describe('POST /api/wheelchair/request', () => {
     expect(res.body.success).toBe(true);
     expect(res.body.data.passenger_id).toBe('tourist-001');
     expect(res.body.data.status).toBe('PENDING');
+    expect(res.body.data.pickup_mode).toBe('CURRENT_LOCATION');
+    expect(res.body.data.drop_address).toBe('Platform 3, Ahmedabad Junction');
+  });
+
+  it('rejects invalid coordinates', async () => {
+    const res = await request(app)
+      .post('/api/wheelchair/request')
+      .set('Authorization', `Bearer ${touristToken}`)
+      .send({ pickup_lat: 100, pickup_lng: 72.5714 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
   });
 
   it('creates a request with minimal fields (no optional fields)', async () => {
@@ -182,10 +208,63 @@ describe('POST /api/wheelchair/request', () => {
     const res = await request(app)
       .post('/api/wheelchair/request')
       .set('Authorization', `Bearer ${touristToken}`)
-      .send({}); // all fields optional
+      .send({
+        pickup_address: 'Gate 1',
+        drop_address: 'Platform 3',
+      });
 
     expect(res.status).toBe(201);
     expect(res.body.success).toBe(true);
+  });
+
+  it('accepts legacy location fields as backwards-compatible aliases', async () => {
+    poolInstance.query
+      .mockResolvedValueOnce({
+        rows: [{
+          ...sampleRequest,
+          pickup_address: 'Old Gate',
+          drop_address: 'Old Platform',
+          pickup_location: 'Old Gate',
+          destination_location: 'Old Platform',
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const res = await request(app)
+      .post('/api/wheelchair/request')
+      .set('Authorization', `Bearer ${touristToken}`)
+      .send({
+        pickup_location: 'Old Gate',
+        destination_location: 'Old Platform',
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.pickup_address).toBe('Old Gate');
+    expect(res.body.data.drop_address).toBe('Old Platform');
+  });
+
+  it('requires coordinates for current-location pickup', async () => {
+    const res = await request(app)
+      .post('/api/wheelchair/request')
+      .set('Authorization', `Bearer ${touristToken}`)
+      .send({
+        pickup_mode: 'CURRENT_LOCATION',
+        drop_address: 'Platform 3',
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+  });
+
+  it('requires a drop location', async () => {
+    const res = await request(app)
+      .post('/api/wheelchair/request')
+      .set('Authorization', `Bearer ${touristToken}`)
+      .send({ pickup_address: 'Gate 1' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
   });
 
   it('rejects an invalid phone number', async () => {
