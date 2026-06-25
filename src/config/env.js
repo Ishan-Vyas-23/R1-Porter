@@ -23,8 +23,22 @@ const env = {
     issuer: process.env.JWT_ISSUER || 'r1-auth-service',
   },
 
+  googleRoutes: {
+    apiKey: process.env.GOOGLE_MAPS_API_KEY || '',
+    enabled: process.env.GOOGLE_ROUTES_ENABLED === 'true',
+    timeoutMs: parseInt(process.env.GOOGLE_ROUTES_TIMEOUT_MS, 10) || 3000,
+  },
+
   logLevel: process.env.LOG_LEVEL || 'info',
 };
+
+if (env.googleRoutes.enabled && !env.googleRoutes.apiKey) {
+  throw new Error('GOOGLE_MAPS_API_KEY must be set when GOOGLE_ROUTES_ENABLED=true');
+}
+
+if (env.googleRoutes.timeoutMs <= 0) {
+  throw new Error('GOOGLE_ROUTES_TIMEOUT_MS must be greater than 0');
+}
 
 if (env.nodeEnv === 'production') {
   if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET must be set in production');

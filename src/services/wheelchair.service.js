@@ -2,31 +2,75 @@
 
 const model = require("../models/wheelchair.model");
 const statusService = require("./wheelchair-status.service");
+const googleGeocodingService = require("./google-geocoding.service");
+const googleRoutesService = require("./google-routes.service");
+const env = require("../config/env");
 const { REQUEST_STATUS, AUDIT_ACTIONS } = require("../utils/constants");
 const logger = require("../utils/logger");
+
+// Ahmedabad Junction scope only. Treat station as Large Station.
+const STATION_CATEGORY = "LARGE";
+const WHEELCHAIR_RATE = 135;
+const COOLIE_RATE = 85;
 
 // ─── Helper: generate UUID ───────────────────────────────────────────────────
 const newId = () => require("crypto").randomUUID();
 
+const normalizeCount = (value, fallback = 1) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 1) {
+    return fallback;
+  }
+
+  return Math.trunc(numeric);
+};
+
 // ─── Cost Calculator ─────────────────────────────────────────────────────────
-const calculateCost = (serviceType, bagCount) => {
-  const WHEELCHAIR_COST = 100;
-  const COOLIE_PER_BAG = 30;
+const calculateCostBreakdown = (serviceType, coolieCount) => {
+  const normalizedCoolieCount = normalizeCount(coolieCount, 1);
+
+  let wheelchairCharge = 0;
+  let coolieCharge = 0;
 
   switch (serviceType) {
     case "WHEELCHAIR":
-      return WHEELCHAIR_COST;
+      wheelchairCharge = WHEELCHAIR_RATE;
+      break;
 
     case "COOLIE":
-      return bagCount * COOLIE_PER_BAG;
+      coolieCharge = COOLIE_RATE * normalizedCoolieCount;
+      break;
 
     case "BOTH":
-      return WHEELCHAIR_COST + bagCount * COOLIE_PER_BAG;
+      wheelchairCharge = WHEELCHAIR_RATE;
+      coolieCharge = COOLIE_RATE * normalizedCoolieCount;
+      break;
 
     default:
-      return WHEELCHAIR_COST;
+      wheelchairCharge = WHEELCHAIR_RATE;
+      break;
   }
+
+  return {
+    station_category: STATION_CATEGORY,
+    wheelchair_charge: wheelchairCharge,
+    coolie_count: normalizedCoolieCount,
+    coolie_charge: coolieCharge,
+    estimated_cost: wheelchairCharge + coolieCharge,
+  };
 };
+
+const toNumberOrNull = (value) => {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+const isPresent = (value) =>
+  value !== null && value !== undefined && value !== "";
 
 // ─── Helper: write audit log (fire-and-forget, non-blocking) ────────────────
 const audit = (requestId, action, performedBy, oldStatus, newStatus, note) => {
@@ -48,16 +92,137 @@ const audit = (requestId, action, performedBy, oldStatus, newStatus, note) => {
     });
 };
 
+const resolveLocation = async ({ label, address, lat, lng }) => {
+  const resolvedAddress = address ? String(address).trim() : null;
+  const numericLat = toNumberOrNull(lat);
+  const numericLng = toNumberOrNull(lng);
+
+  if (numericLat !== null && numericLng !== null) {
+    return {
+      address: resolvedAddress,
+      lat: numericLat,
+      lng: numericLng,
+      geocode_status: "COORDINATES_PROVIDED",
+      geocode_error: null,
+    };
+  }
+
+  if (!resolvedAddress) {
+    return {
+      address: null,
+      lat: null,
+      lng: null,
+      geocode_status: "MISSING",
+      geocode_error: null,
+    };
+  }
+
+  try {
+    const geocoded =
+      await googleGeocodingService.geocodeAddress(resolvedAddress);
+
+    return {
+      address: resolvedAddress,
+      lat: geocoded.lat,
+      lng: geocoded.lng,
+      geocode_status: "SUCCESS",
+      geocode_error: null,
+    };
+  } catch (err) {
+    logger.warn("Google geocoding failed", {
+      label,
+      address: resolvedAddress,
+      error: err.message,
+    });
+
+    return {
+      address: resolvedAddress,
+      lat: null,
+      lng: null,
+      geocode_status: "FAILED",
+      geocode_error: err.message,
+    };
+  }
+};
+
+const buildRouteEstimate = async ({ pickup, drop }) => {
+  if (pickup.geocode_status === "FAILED" || drop.geocode_status === "FAILED") {
+    return {
+      route_status: "GEOCODING_FAILED",
+      route_error:
+        pickup.geocode_error || drop.geocode_error || "Google geocoding failed",
+    };
+  }
+
+  if (!env.googleRoutes.enabled) {
+    return { route_status: "NOT_REQUESTED" };
+  }
+
+  const hasPickupCoordinates = isPresent(pickup.lat) && isPresent(pickup.lng);
+  const hasDropCoordinates = isPresent(drop.lat) && isPresent(drop.lng);
+
+  if (!hasPickupCoordinates || !hasDropCoordinates) {
+    return { route_status: "SKIPPED_MISSING_COORDINATES" };
+  }
+
+  try {
+    const route = await googleRoutesService.calculateRoute({
+      pickup_lat: pickup.lat,
+      pickup_lng: pickup.lng,
+      drop_lat: drop.lat,
+      drop_lng: drop.lng,
+    });
+
+    return {
+      route_distance_meters: route.distanceMeters,
+      route_duration_seconds: route.durationSeconds,
+      route_status: "SUCCESS",
+      route_calculated_at: new Date().toISOString(),
+      route_error: null,
+    };
+  } catch (err) {
+    logger.warn("Google route calculation failed", {
+      error: err.message,
+    });
+
+    return {
+      route_status: "FAILED",
+      route_error: err.message,
+    };
+  }
+};
+
 // ─── Passenger: Create Request ───────────────────────────────────────────────
 const createRequest = async (user, body) => {
   const id = newId();
 
   const serviceType = body.service_type || "WHEELCHAIR";
-  const bagCount = body.bag_count || 0;
+  const bagCount = body.bag_count ?? 0;
+  const coolieCount = body.coolie_count ?? 1;
+
   const pickupAddress = body.pickup_address || body.pickup_location || null;
   const dropAddress = body.drop_address || body.destination_location || null;
 
-  const estimatedCost = calculateCost(serviceType, bagCount);
+  const [pickupResolved, dropResolved] = await Promise.all([
+    resolveLocation({
+      label: "pickup",
+      address: pickupAddress,
+      lat: body.pickup_lat,
+      lng: body.pickup_lng,
+    }),
+    resolveLocation({
+      label: "drop",
+      address: dropAddress,
+      lat: body.drop_lat,
+      lng: body.drop_lng,
+    }),
+  ]);
+
+  const costBreakdown = calculateCostBreakdown(serviceType, coolieCount);
+  const routeEstimate = await buildRouteEstimate({
+    pickup: pickupResolved,
+    drop: dropResolved,
+  });
 
   const request = await model.createRequest({
     id,
@@ -67,19 +232,25 @@ const createRequest = async (user, body) => {
     station_code: body.station_code || null,
     platform_number: body.platform_number || null,
     pickup_mode: body.pickup_mode || "MANUAL",
-    pickup_address: pickupAddress,
-    pickup_lat: body.pickup_lat ?? null,
-    pickup_lng: body.pickup_lng ?? null,
-    drop_address: dropAddress,
-    drop_lat: body.drop_lat ?? null,
-    drop_lng: body.drop_lng ?? null,
-    pickup_location: body.pickup_location || pickupAddress,
-    destination_location: body.destination_location || dropAddress,
+
+    pickup_address: pickupResolved.address,
+    pickup_lat: pickupResolved.lat,
+    pickup_lng: pickupResolved.lng,
+
+    drop_address: dropResolved.address,
+    drop_lat: dropResolved.lat,
+    drop_lng: dropResolved.lng,
+
+    pickup_location: body.pickup_location || pickupResolved.address,
+    destination_location: body.destination_location || dropResolved.address,
+
     accessibility_notes: body.accessibility_notes || null,
 
     service_type: serviceType,
     bag_count: bagCount,
-    estimated_cost: estimatedCost,
+    coolie_count: costBreakdown.coolie_count,
+    estimated_cost: costBreakdown.estimated_cost,
+    ...routeEstimate,
   });
 
   audit(
@@ -96,7 +267,11 @@ const createRequest = async (user, body) => {
     passengerId: user.id,
     serviceType,
     bagCount,
-    estimatedCost,
+    coolieCount: costBreakdown.coolie_count,
+    estimatedCost: costBreakdown.estimated_cost,
+    pickupGeocodeStatus: pickupResolved.geocode_status,
+    dropGeocodeStatus: dropResolved.geocode_status,
+    routeStatus: routeEstimate.route_status,
   });
 
   return request;
@@ -240,12 +415,19 @@ const updateRequestStatus = async (id, user, body) => {
 
 const estimateCost = (body) => {
   const serviceType = body.service_type || "WHEELCHAIR";
-  const bagCount = body.bag_count || 0;
+  const bagCount = body.bag_count ?? 0;
+  const coolieCount = body.coolie_count ?? 1;
+
+  const costBreakdown = calculateCostBreakdown(serviceType, coolieCount);
 
   return {
     service_type: serviceType,
     bag_count: bagCount,
-    estimated_cost: calculateCost(serviceType, bagCount),
+    coolie_count: costBreakdown.coolie_count,
+    station_category: costBreakdown.station_category,
+    wheelchair_charge: costBreakdown.wheelchair_charge,
+    coolie_charge: costBreakdown.coolie_charge,
+    estimated_cost: costBreakdown.estimated_cost,
   };
 };
 

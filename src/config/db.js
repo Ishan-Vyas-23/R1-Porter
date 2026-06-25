@@ -1,8 +1,10 @@
-'use strict';
+"use strict";
 
-const { Pool } = require('pg');
-const env = require('./env');
-const logger = require('../utils/logger');
+const { Pool } = require("pg");
+const env = require("./env");
+const logger = require("../utils/logger");
+
+const isProduction = process.env.NODE_ENV === "production";
 
 const pool = new Pool({
   host: env.db.host,
@@ -10,17 +12,26 @@ const pool = new Pool({
   database: env.db.name,
   user: env.db.user,
   password: env.db.password,
+
   max: env.db.poolMax,
   idleTimeoutMillis: env.db.idleTimeoutMs,
   connectionTimeoutMillis: env.db.connectionTimeoutMs,
+
+  ssl: isProduction
+    ? {
+        rejectUnauthorized: false,
+      }
+    : false,
 });
 
-pool.on('connect', () => {
-  logger.debug('New DB connection established');
+pool.on("connect", () => {
+  logger.debug("New DB connection established");
 });
 
-pool.on('error', (err) => {
-  logger.error('Unexpected DB pool error', { error: err.message });
+pool.on("error", (err) => {
+  logger.error("Unexpected DB pool error", {
+    error: err.message,
+  });
 });
 
 const query = (text, params) => pool.query(text, params);
@@ -29,12 +40,18 @@ const getClient = () => pool.connect();
 
 const testConnection = async () => {
   const client = await pool.connect();
+
   try {
-    await client.query('SELECT NOW()');
-    logger.info('Database connection verified');
+    await client.query("SELECT NOW()");
+    logger.info("Database connection verified");
   } finally {
     client.release();
   }
 };
 
-module.exports = { query, getClient, testConnection, pool };
+module.exports = {
+  query,
+  getClient,
+  testConnection,
+  pool,
+};

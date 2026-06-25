@@ -27,16 +27,24 @@ jest.mock('pg', () => {
   return { Pool: jest.fn(() => mPool) };
 });
 
+jest.mock('../src/services/google-routes.service', () => ({
+  calculateRoute: jest.fn(),
+}));
+
 const { Pool } = require('pg');
 const poolInstance = new Pool();
+const googleRoutesService = require('../src/services/google-routes.service');
 
 // ─── App (loads after mock is in place) ─────────────────────────────────────
 process.env.JWT_SECRET    = 'test-secret';
 process.env.JWT_ISSUER    = 'r1-auth-service';
 process.env.NODE_ENV      = 'test';
 process.env.LOG_LEVEL     = 'silent'; // suppress winston output during tests
+process.env.GOOGLE_ROUTES_ENABLED = 'false';
+process.env.GOOGLE_ROUTES_TIMEOUT_MS = '3000';
 
 const app = require('../src/app');
+const env = require('../src/config/env');
 
 // ─── Token Helpers ───────────────────────────────────────────────────────────
 const makeToken = (overrides = {}) =>
@@ -68,6 +76,11 @@ const sampleRequest = {
   pickup_location:        'Main Entrance Gate',
   destination_location:   'Platform 3',
   accessibility_notes:    'Uses manual wheelchair',
+  route_distance_meters:  null,
+  route_duration_seconds: null,
+  route_status:           'NOT_REQUESTED',
+  route_calculated_at:    null,
+  route_error:            null,
   status:                 'PENDING',
   assigned_attendant_id:  null,
   assigned_attendant_name: null,
@@ -89,6 +102,10 @@ const inProgressRequest = { ...acceptedRequest, status: 'IN_PROGRESS' };
 // ─── Utility: reset mock between tests ──────────────────────────────────────
 beforeEach(() => {
   poolInstance.query.mockReset();
+  googleRoutesService.calculateRoute.mockReset();
+  env.googleRoutes.enabled = false;
+  env.googleRoutes.apiKey = '';
+  env.googleRoutes.timeoutMs = 3000;
   // Default: testConnection SELECT NOW() always succeeds
   poolInstance.connect.mockResolvedValue({
     query: jest.fn().mockResolvedValue({ rows: [{ now: new Date() }] }),
@@ -265,6 +282,108 @@ describe('POST /api/wheelchair/request', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
+  });
+
+  it('stores successful Google route estimates when enabled and coordinates exist', async () => {
+    env.googleRoutes.enabled = true;
+    env.googleRoutes.apiKey = 'test-google-key';
+    googleRoutesService.calculateRoute.mockResolvedValue({
+      distanceMeters: 450,
+      durationSeconds: 360,
+    });
+
+    poolInstance.query
+      .mockResolvedValueOnce({
+        rows: [{
+          ...sampleRequest,
+          route_distance_meters: 450,
+          route_duration_seconds: 360,
+          route_status: 'SUCCESS',
+          route_calculated_at: new Date().toISOString(),
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const res = await request(app)
+      .post('/api/wheelchair/request')
+      .set('Authorization', `Bearer ${touristToken}`)
+      .send({
+        pickup_mode: 'CURRENT_LOCATION',
+        pickup_lat: 23.0225,
+        pickup_lng: 72.5714,
+        drop_address: 'Platform 3',
+        drop_lat: 23.0230,
+        drop_lng: 72.5720,
+      });
+
+    expect(res.status).toBe(201);
+    expect(googleRoutesService.calculateRoute).toHaveBeenCalledWith({
+      pickup_lat: 23.0225,
+      pickup_lng: 72.5714,
+      drop_lat: 23.0230,
+      drop_lng: 72.5720,
+    });
+    expect(res.body.data.route_status).toBe('SUCCESS');
+    expect(res.body.data.route_distance_meters).toBe(450);
+    expect(res.body.data.route_duration_seconds).toBe(360);
+  });
+
+  it('skips Google route estimates when enabled but coordinates are missing', async () => {
+    env.googleRoutes.enabled = true;
+    env.googleRoutes.apiKey = 'test-google-key';
+
+    poolInstance.query
+      .mockResolvedValueOnce({
+        rows: [{
+          ...sampleRequest,
+          route_status: 'SKIPPED_MISSING_COORDINATES',
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const res = await request(app)
+      .post('/api/wheelchair/request')
+      .set('Authorization', `Bearer ${touristToken}`)
+      .send({
+        pickup_address: 'Gate 1',
+        drop_address: 'Platform 3',
+      });
+
+    expect(res.status).toBe(201);
+    expect(googleRoutesService.calculateRoute).not.toHaveBeenCalled();
+    expect(res.body.data.route_status).toBe('SKIPPED_MISSING_COORDINATES');
+  });
+
+  it('creates the request when Google route calculation fails', async () => {
+    env.googleRoutes.enabled = true;
+    env.googleRoutes.apiKey = 'test-google-key';
+    googleRoutesService.calculateRoute.mockRejectedValue(new Error('routes unavailable'));
+
+    poolInstance.query
+      .mockResolvedValueOnce({
+        rows: [{
+          ...sampleRequest,
+          route_status: 'FAILED',
+          route_error: 'routes unavailable',
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const res = await request(app)
+      .post('/api/wheelchair/request')
+      .set('Authorization', `Bearer ${touristToken}`)
+      .send({
+        pickup_mode: 'CURRENT_LOCATION',
+        pickup_lat: 23.0225,
+        pickup_lng: 72.5714,
+        drop_address: 'Platform 3',
+        drop_lat: 23.0230,
+        drop_lng: 72.5720,
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.route_status).toBe('FAILED');
+    expect(res.body.data.route_error).toBe('routes unavailable');
   });
 
   it('rejects an invalid phone number', async () => {

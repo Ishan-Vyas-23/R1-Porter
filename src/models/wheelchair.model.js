@@ -22,10 +22,15 @@ const createRequest = async (fields) => {
     pickup_location,
     destination_location,
     accessibility_notes,
-
     service_type,
     bag_count,
+    coolie_count,
     estimated_cost,
+    route_distance_meters,
+    route_duration_seconds,
+    route_status,
+    route_calculated_at,
+    route_error,
   } = fields;
 
   const { rows } = await db.query(
@@ -48,11 +53,17 @@ const createRequest = async (fields) => {
        accessibility_notes,
        service_type,
        bag_count,
+       coolie_count,
        estimated_cost,
+       route_distance_meters,
+       route_duration_seconds,
+       route_status,
+       route_calculated_at,
+       route_error,
        status
      )
      VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'PENDING'
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,'PENDING'
      )
      RETURNING *`,
     [
@@ -72,10 +83,15 @@ const createRequest = async (fields) => {
       pickup_location || null,
       destination_location || null,
       accessibility_notes || null,
-
       service_type || "WHEELCHAIR",
-      bag_count || 0,
-      estimated_cost || 0,
+      bag_count ?? 0,
+      coolie_count ?? 1,
+      estimated_cost ?? 0,
+      route_distance_meters ?? null,
+      route_duration_seconds ?? null,
+      route_status || "NOT_REQUESTED",
+      route_calculated_at || null,
+      route_error || null,
     ],
   );
 
